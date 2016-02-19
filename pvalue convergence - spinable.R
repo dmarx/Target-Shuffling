@@ -212,3 +212,103 @@ legend('topleft', c('Target Shuffled Accuracy', 'Observed Accuracy'), lty=1:2, c
 print(paste("Estimated p-value:", results_c$est_pval))
 summary(results_c$values)
 
+#' ### Bootstrap
+#' 
+#' Target shuffling gives us a distribution over the null hypothesis. The *bootstrap* 
+#' technique gives us a distribution over model solutions and/or evaluation statistics,
+#' AKA distributions over the alternative hypothesis. We estimated our p-value by 
+#' comparing a unique model solution against our distribution of null hypotheses, but
+#' we can actually infer a distribution over p-values, giving us a confidence interval
+#' on our p-value (!!!)
+
+boot_sample = function(x){
+  n = nrow(x)
+  ix = sample(n, replace=TRUE)
+  x[ix,]
+}
+
+boot_stat = function(k, x, y, fitModel, stat){
+  results = rep(NULL, k)
+  full_dat = cbind(y,x)
+  for(i in 1:k){
+    boot_dat = boot_sample(full_dat)
+    xb = boot_dat[,2:(NCOL(x)+1)]
+    yb = boot_dat[,1]
+    results[i] = stat(fitModel(xb, yb))
+  }
+  results
+}
+
+# results_a = tShuffle(n, iris$Petal.Width, iris$Petal.Length, fitModel, stat, replace=TRUE)
+boot_r2 = boot_stat(n, iris$Petal.Width, iris$Petal.Length, fitModel, stat)
+
+
+plot(density(results_a$values), xlim=c(0,1), main='KDE of Target Shuffling Results')
+lines(density(boot_r2), col='blue')
+abline(v=stat(mod_a), lty=2, col='red')
+legend('top', c('Target Shuffled R2', 'Observed R2', 'Bootstrapped R2'), lty=c(1,2,1), col=c(1,'red', 'blue'))
+
+#' I like this. Let's wrap the whole process.
+
+simulate_distributional_hypothesis_test = function(k, x, y, fitModel, stat, plt=TRUE){
+  null_dist = tShuffle(k, x, y, fitModel, stat, replace=TRUE)
+  alt_dist  = boot_stat(k, x, y, fitModel, stat)
+  mod = fitModel(x,y)
+  obs_stat = stat(mod)
+  p_dist = sapply(alt_dist, function(v) 1 - mean(v>null_dist$values))
+  p_thsuffle = null_dist$est_pval
+  if(plt){
+    plot(density(null_dist$values), xlim=range(c(null_dist, alt_dist)), main="Target shuffling vs. bootstrap")
+    lines(density(alt_dist), col='blue')
+    abline(v=obs_stat, lty=2, col='red')
+    legend('top', c('Target Shuffled stat', 'Observed stat', 'Bootstrapped stat'), lty=c(1,2,1), col=c(1,'red', 'blue'))
+  }
+  list(null_hypothesis=null_dist$values, 
+       alternative_hypothesis=alt_dist, 
+       fitted_stat=obs_stat, 
+       fitted_model=mod, 
+       fitted_pval=extract_pval(mod), 
+       pvalue_distribution=p_dist,
+       tshuffle_pvalue=p_thsuffle)
+}
+
+#' Where we have wel defined significance, the two distributions are well separated.
+
+sim_dist = simulate_distributional_hypothesis_test(n, iris$Petal.Width, iris$Petal.Length, fitModel, stat)
+
+#' Where we don't have strong significance, there is overlap in the target shuffled and bootstrapped distributions, and
+#' we get a range (distribution) of pvalues
+
+sim_dist2 = simulate_distributional_hypothesis_test(n, iris$Sepal.Width, iris$Sepal.Length, fitModel, stat)
+
+plot(density(sim_dist2$pvalue_distribution), main="p-value distribution", xlim=c(0,1))
+abline(v=sim_dist2$fitted_pval, lty=2, col="red")
+legend('topright', c('Estimated p-value distribution', 'Analytic p-value'), lty=c(1,2), col=c(1,'red'))
+
+#' The median of our estimation distribution is pretty close to our analytic and target-shuffled p-values.
+sim_dist2$fitted_pval
+sim_dist2$tshuffle_pvalue
+quantile(sim_dist2$pvalue_distribution, c(.05, .5, .95))
+
+#' interesting, the mode and mean are not.
+dens = density(sim_dist2$pvalue_distribution)
+dens$x[which.max(dens$y)] # pval distr mode
+mean(sim_dist2$pvalue_distribution) # pval distr mean
+
+#' being a bit more traditional, let's look at the distribution of the difference between the null and the alternative
+#' hypothesis. If this distribution contains 0 at our significance level of interest, we fail to reject the null.
+dist_diff = sim_dist2$alternative_hypothesis - sim_dist2$null_hypothesis
+plot(density(dist_diff))
+quantile(dist_diff, c(.05, .5, .95))
+
+
+#' ### Discussion
+#'
+#' This obviously invites the question: how useful is a confidence bound about a p-value? I've certainly never seen this 
+#' approach used anywhere, but at face value it doesn't strike me as completely useless. In fact, having computed this, 
+#' this seems like a good way of doing things. Why shouldn't we calculate bounds about our p-values? How useful is a p-value,
+#' or really any statistic, in complete isolation? Although this seems reasonable at first, I have to admit: I'm struggling to 
+#' find real value in this range I've constructed. My initial result from target shuffling against a single point estimate for
+#' my statistics demonstrated that my model was not significant at a 10% threshold. Querying the p-value distribution told me that
+#' there are random models that are significant (the tail of the distribution that lies outside of the range of the target shuffled
+#' statistic) and there are random models that are stringly not significant (the distributional overlap). So what?
